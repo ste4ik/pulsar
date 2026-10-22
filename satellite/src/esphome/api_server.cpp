@@ -1320,7 +1320,7 @@ struct ApiServer::Impl {
       send_msg(c, LIST_SWITCH, w);
     };
     sw("mute_microphones", K_SW_MIC_MUTE, "Mute microphones", "mdi:microphone-off");
-    sw("clock_display", K_SW_CLOCK, "Clock display", "mdi:clock-digital");
+    if (cfg.has_clock) sw("clock_display", K_SW_CLOCK, "Clock display", "mdi:clock-digital");
     {
       pb::Writer w;
       entity_head(w, "auto_update", K_SW_AUTO_UPDATE, "Auto update");
@@ -1358,7 +1358,7 @@ struct ApiServer::Impl {
       w.u32(10, STATE_CLASS_MEASUREMENT);
       send_msg(c, LIST_SENSOR, w);
     }
-    {
+    if (cfg.has_clock) {
       pb::Writer w;
       entity_head(w, "clock_brightness", K_NUMBER_CLOCK_BRI, "Clock brightness");
       w.str(5, "mdi:brightness-6");
@@ -1421,7 +1421,7 @@ struct ApiServer::Impl {
     };
     text("ip_address", K_TEXT_IP, "IP address", "mdi:ip-network");
     text("version", K_TEXT_VERSION, "Version", "mdi:new-box");
-    {
+    if (cfg.has_clock) {
       pb::Writer w;
       entity_head(w, "clock_text_speed", K_NUMBER_CLOCK_SCROLL, "Clock text speed");
       w.str(5, "mdi:speedometer");
@@ -1433,14 +1433,14 @@ struct ApiServer::Impl {
       w.u32(12, NUMBER_MODE_SLIDER);
       send_msg(c, LIST_NUMBER, w);
     }
-    {
+    if (cfg.has_clock) {
       pb::Writer w;
       entity_head(w, "clock_text", K_TEXT_CLOCK, "Clock text");
       w.str(5, "mdi:form-textbox");
       w.u32(9, kClockTextMax);  // max_length
       send_msg(c, LIST_TEXT, w);
     }
-    {
+    if (cfg.has_clock) {
       pb::Writer w;
       entity_head(w, "clock_face", K_SELECT_CLOCK_FACE, "Clock face");
       w.str(5, "mdi:emoticon-outline");
@@ -1480,8 +1480,10 @@ struct ApiServer::Impl {
       w.msg(3, s);
       send_msg(c, LIST_SERVICES, w);
     };
-    action("clock_show_text", K_ACTION_CLOCK_TEXT, "text");
-    action("clock_show_face", K_ACTION_CLOCK_FACE, "face");
+    if (cfg.has_clock) {
+      action("clock_show_text", K_ACTION_CLOCK_TEXT, "text");
+      action("clock_show_face", K_ACTION_CLOCK_FACE, "face");
+    }
     send_msg(c, LIST_DONE, pb::Writer());
   }
 
@@ -1543,22 +1545,24 @@ struct ApiServer::Impl {
   void send_all_states(const ClientPtr &c) {
     send_media(c);
     send_switch(K_SW_MIC_MUTE, sw_mic_mute, c);
-    send_switch(K_SW_CLOCK, sw_clock, c);
+    if (cfg.has_clock) send_switch(K_SW_CLOCK, sw_clock, c);
     send_switch(K_SW_AUTO_UPDATE, sw_auto_update, c);
     send_switch(K_SW_NEAREST_ANSWERS, sw_nearest_answers, c);
     send_update(c);
     send_binary(K_BS_HW_MIC_MUTE, bs_hw_mute, c);
     send_float(SENSOR_STATE, K_SENSOR_LUX, lux, c);
-    send_float(NUMBER_STATE, K_NUMBER_CLOCK_BRI, clock_bri, c);
+    if (cfg.has_clock) send_float(NUMBER_STATE, K_NUMBER_CLOCK_BRI, clock_bri, c);
     send_light(c);
     refresh_diagnostics(false);
     send_float(SENSOR_STATE, K_SENSOR_RSSI, rssi, c);
     send_uptime(c);
     send_ip(c);
     send_str(TEXT_SENSOR_STATE, K_TEXT_VERSION, id.project_version, true, c);
-    send_float(NUMBER_STATE, K_NUMBER_CLOCK_SCROLL, clock_scroll, c);
-    send_str(TEXT_STATE, K_TEXT_CLOCK, clock_text.v, clock_text.has, c);
-    send_str(SELECT_STATE, K_SELECT_CLOCK_FACE, clock_face.v, clock_face.has, c);
+    if (cfg.has_clock) {
+      send_float(NUMBER_STATE, K_NUMBER_CLOCK_SCROLL, clock_scroll, c);
+      send_str(TEXT_STATE, K_TEXT_CLOCK, clock_text.v, clock_text.has, c);
+      send_str(SELECT_STATE, K_SELECT_CLOCK_FACE, clock_face.v, clock_face.has, c);
+    }
     if (!cfg.zigbee_modes.empty()) {
       send_str(SELECT_STATE, K_SELECT_ZIGBEE_MODE, zigbee_mode.v, zigbee_mode.has, c);
       send_str(TEXT_SENSOR_STATE, K_TEXT_ZIGBEE, zigbee_status.v, zigbee_status.has, c);
@@ -1896,7 +1900,7 @@ void ApiServer::publish_switch(SwitchId id, bool state) {
   if (!s) return;
   s->has = true;
   s->v = state;
-  if (impl_->states_on()) impl_->send_switch(key, *s);
+  if (impl_->states_on() && (impl_->cfg.has_clock || key != K_SW_CLOCK)) impl_->send_switch(key, *s);
 }
 
 void ApiServer::publish_binary_sensor(BinarySensorId, bool state) {
@@ -1916,18 +1920,21 @@ void ApiServer::publish_number(NumberId id, float value) {
   FloatState &s = scroll ? impl_->clock_scroll : impl_->clock_bri;
   s.has = true;
   s.v = value;
-  if (impl_->states_on()) impl_->send_float(NUMBER_STATE, scroll ? K_NUMBER_CLOCK_SCROLL : K_NUMBER_CLOCK_BRI, s);
+  if (impl_->states_on() && impl_->cfg.has_clock)
+    impl_->send_float(NUMBER_STATE, scroll ? K_NUMBER_CLOCK_SCROLL : K_NUMBER_CLOCK_BRI, s);
 }
 
 void ApiServer::publish_text(TextId, const std::string &state) {
   impl_->clock_text = {true, state};
-  if (impl_->states_on()) impl_->send_str(TEXT_STATE, K_TEXT_CLOCK, state, true);
+  if (impl_->states_on() && impl_->cfg.has_clock) impl_->send_str(TEXT_STATE, K_TEXT_CLOCK, state, true);
 }
 
 void ApiServer::publish_select(SelectId id, const std::string &state) {
   const bool zb = id == SelectId::ZIGBEE_MODE;
   (zb ? impl_->zigbee_mode : impl_->clock_face) = {true, state};
-  if (impl_->states_on()) impl_->send_str(SELECT_STATE, zb ? K_SELECT_ZIGBEE_MODE : K_SELECT_CLOCK_FACE, state, true);
+  if (!impl_->states_on()) return;
+  if (!zb && !impl_->cfg.has_clock) return;
+  impl_->send_str(SELECT_STATE, zb ? K_SELECT_ZIGBEE_MODE : K_SELECT_CLOCK_FACE, state, true);
 }
 
 void ApiServer::publish_text_sensor(TextSensorId, const std::string &state) {

@@ -165,6 +165,9 @@ struct ApiConfig {
   std::vector<std::string> active_wake_words;     // initially active ids
   std::vector<std::string> light_effects;         // ring light effects, besides "None"
   std::vector<std::string> clock_faces;           // Select «Clock face» options, "None" first
+  // The model has a clock panel (Clock::open() succeeded). False: no clock switch/number/text/
+  // select entities and no clock_show_* actions are sent (they would be permanently dead in HA).
+  bool has_clock = true;
   // Select «Zigbee role» options; empty: no Zigbee entities (no radio).
   std::vector<std::string> zigbee_modes;
   // File holding the Noise encryption key (base64 of 32 bytes, as in ESPHome's api: encryption:

@@ -23,9 +23,6 @@ constexpr const char *kCommandModel = "/system/vendor/quasar/spotter_models/comm
 // within this window; the HA pipeline is then cancelled.
 constexpr int64_t kCommandAfterWakeMs = 2500;
 constexpr const char *kSounds = "/system/vendor/quasar/sounds/";
-const std::string kSndWake = std::string(kSounds) + "common/spotter_start.mp3";
-const std::string kSndCancel = std::string(kSounds) + "common/spotter_cancel.mp3";
-const std::string kSndTimer = std::string(kSounds) + "common/timer.wav";
 constexpr float kDuckGain = 0.15f;
 constexpr int64_t kTimerRingMaxMs = 15 * 60 * 1000;
 // Longest wait for the next pipeline event before the dialog is given up locally. HA's voice
@@ -162,6 +159,12 @@ bool Controller::start() {
   id.manufacturer = "Yandex";
   id.project_version = PULSAR_VERSION;
 
+  // Hardware first: UI feedback should work even if HA is not connected. The clock panel is
+  // optional: a station without one (Mini 2) gets no clock entities in Home Assistant.
+  if (!leds_.open()) LOGW("LEDs unavailable");
+  const bool clock_ok = clock_.open();
+  if (!clock_ok) LOGW("clock unavailable");
+
   ApiConfig cfg;
   cfg.wake_words = {{"alisa", "Алиса", {"ru"}}, {"yandex", "Яндекс", {"ru"}}};
   if (st_.wake_word != "alisa" && st_.wake_word != "yandex") st_.wake_word = "alisa";
@@ -171,14 +174,12 @@ bool Controller::start() {
   cfg.clock_faces.insert(cfg.clock_faces.end(), Clock::face_names().begin(), Clock::face_names().end());
   const auto slash = state_path_.rfind('/');
   cfg.key_path = (slash == std::string::npos ? std::string(".") : state_path_.substr(0, slash)) + "/api_key";
+  cfg.has_clock = clock_ok;
   if (!model_.zigbee_tty.empty())
     for (const auto &r : ZigbeeService::kRoles) cfg.zigbee_modes.push_back(r.label);
   api_ = std::make_unique<ApiServer>(loop_, id, cfg, *this);
   arbiter_ok_ = arbiter_.start(id.name);
 
-  // Hardware first: UI feedback should work even if HA is not connected.
-  if (!leds_.open()) LOGW("LEDs unavailable");
-  if (!clock_.open()) LOGW("clock unavailable");
   clock_.set_enabled(st_.clock_on);
   clock_.set_brightness(st_.clock_brightness);
   clock_.set_scroll_ms(st_.clock_scroll_ms);
@@ -213,7 +214,7 @@ bool Controller::start() {
   }
   publish_update();
   loop_.add_timer(kUpdateFirstCheckMs, [this] { check_update(); }, kUpdateCheckPeriodMs);
-  if (!player_.init()) LOGE("player init failed");
+  if (!player_.init(model_.playback_pcm)) LOGE("player init failed");
   // ANNOUNCING is reported only for HA announcements (on_announce / media announce), not for
   // earcons, timer alarms or pipeline TTS that share the ANNOUNCE playback channel.
   player_.on_state([this](Channel, PlayState) { publish_media(); });
@@ -239,7 +240,7 @@ bool Controller::start() {
         if (timer_ringing_) return stop_timer_ring();
         if (phase_ == Phase::LISTENING || phase_ == Phase::PROCESSING) {
           interrupt_speech();  // an announcement playing over the dialog goes with it
-          play_closing_earcon(kSndCancel);
+          play_closing_earcon(kSounds + model_.cancel_sound);
           return finish_interaction();
         }
         if (phase_ == Phase::SPEAKING || announcing_) {
@@ -451,7 +452,7 @@ void Controller::start_pipeline(const std::string &phrase, bool earcon, std::vec
   tts_played_ = false;
   continue_conversation_ = false;
   update_duck();
-  if (earcon) player_.play(Channel::ANNOUNCE, {kSndWake});
+  if (earcon) player_.play(Channel::ANNOUNCE, {kSounds + model_.wake_sound});
   const uint64_t dialog = dialog_;
   api_->voice_request_start(phrase);
   if (dialog != dialog_) return;  // sending failed and closed the voice client, which ended the dialog
@@ -749,7 +750,7 @@ void Controller::ring_timer() {
     ring_yielded_ = true;
     return;
   }
-  player_.play(Channel::ANNOUNCE, {kSndTimer}, [this](bool) {
+  player_.play(Channel::ANNOUNCE, {kSounds + model_.timer_sound}, [this](bool) {
     if (timer_ringing_ && !timer_ring_tick_) timer_ring_tick_ = loop_.add_timer(300, [this] { ring_timer(); });
   });
 }
@@ -799,6 +800,7 @@ void Controller::start_sendspin(const DeviceIdentity &id) {
   for (char c : id.mac) cfg.mac += char(tolower(c));
   auto slash = state_path_.rfind('/');
   cfg.state_dir = (slash == std::string::npos ? std::string(".") : state_path_.substr(0, slash)) + "/sendspin";
+  cfg.pcm = model_.playback_pcm;
   cfg.port = kSendspinPort;
 
   SendspinService::Hooks h;
@@ -926,28 +928,26 @@ void Controller::on_media_command(const MediaCommandRequest &cmd) {
   }
   if (cmd.has_volume) set_volume(cmd.volume, false);
   if (cmd.has_command) {
-    const bool ss_on = sendspin_ && sendspin_->streaming();
+    // Same paths as the voice commands: a Sendspin stream is controlled through the group
+    // transport, so HA's pause/play behaves like "Алиса, пауза" and every speaker in the group
+    // stays in sync instead of this one silently leaving the group.
     switch (cmd.command) {
       case MediaCommand::PLAY:
-        if (ss_on && player_.state(Channel::MUSIC) == PlayState::PAUSED) sendspin_->yield_to_local();
-        player_.resume(Channel::MUSIC);
+        music_resume();
         break;
       case MediaCommand::PAUSE:
-        // While Sendspin plays, HA's pause/stop leave the Sendspin group (the speaker stops).
-        if (ss_on && player_.state(Channel::MUSIC) != PlayState::PLAYING) sendspin_->yield_to_local();
-        player_.pause(Channel::MUSIC);
+        music_pause();
         break;
       case MediaCommand::TOGGLE:
-        if (player_.state(Channel::MUSIC) == PlayState::PLAYING)
-          player_.pause(Channel::MUSIC);
-        else if (ss_on)
-          sendspin_->yield_to_local();
+        if (player_.state(Channel::MUSIC) == PlayState::PLAYING ||
+            (sendspin_ && sendspin_->streaming()))
+          music_pause();
         else
-          player_.resume(Channel::MUSIC);
+          music_resume();
         break;
       case MediaCommand::STOP:
         player_.stop(Channel::MUSIC);
-        if (ss_on) sendspin_->yield_to_local();
+        if (sendspin_) sendspin_->transport(SendspinService::Transport::STOP);
         break;
       case MediaCommand::MUTE:
       case MediaCommand::UNMUTE:
