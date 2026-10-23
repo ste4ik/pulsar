@@ -150,9 +150,10 @@ Home Assistant по протоколу ESPHome Native API и выглядит в
 
 ### Скрипты установки этого порта
 
-Так ставилась и проверялась колонка, на которой обкатывался порт. Скрипты лежат рядом с
-репозиторием (вне его): `pulsar-install.sh` для Linux/macOS/Git Bash и `pulsar-install.ps1` для
-Windows. Сначала соберите демон для armhf («Сборка из исходников»), затем:
+Так ставилась и проверялась колонка, на которой обкатывался порт. Скрипты лежат в корне
+репозитория: `pulsar-install.sh` для Linux/macOS/Git Bash и `pulsar-install.ps1` для Windows
+(рядом — `pulsar-remove.sh` и `pulsar-remove.ps1`). Сначала соберите демон для armhf («Сборка из
+исходников»), затем:
 
 ```sh
 ./pulsar-install.sh 192.168.1.50:5555            # серийник как в `adb devices`
