@@ -188,18 +188,22 @@ Home Assistant по протоколу ESPHome Native API и выглядит в
 лежит готовый `pulsar-armhf.bin` и `SHA256SUMS`. Установщик из релизов `Morvex885/pulsar` модель
 `station-mini2` пока не знает, поэтому бинарник передаётся скрипту этого порта явно.
 
-Linux и macOS:
+Linux и macOS (нужны `git`, `adb` в `PATH` и root на колонке):
 
 ```sh
+git clone https://github.com/ste4ik/pulsar
+cd pulsar
 curl -fLO https://github.com/ste4ik/pulsar/releases/latest/download/pulsar-armhf.bin
 curl -fLO https://github.com/ste4ik/pulsar/releases/latest/download/SHA256SUMS
 grep 'pulsar-armhf.bin$' SHA256SUMS | sha256sum -c -   # на macOS: shasum -a 256 pulsar-armhf.bin
 ./pulsar-install.sh 192.168.1.50:5555 --bin ./pulsar-armhf.bin
 ```
 
-Windows (PowerShell):
+Windows (PowerShell, тоже с `adb` в `PATH`):
 
 ```powershell
+git clone https://github.com/ste4ik/pulsar
+cd pulsar
 curl.exe -fLO https://github.com/ste4ik/pulsar/releases/latest/download/pulsar-armhf.bin
 Get-FileHash .\pulsar-armhf.bin -Algorithm SHA256   # сверить со строкой в SHA256SUMS
 .\pulsar-install.ps1 192.168.1.50:5555 -Bin .\pulsar-armhf.bin
