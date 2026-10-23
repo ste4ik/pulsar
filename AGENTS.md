@@ -330,7 +330,7 @@ carried over).
 | Volume | "Master Playback Volume" softvol on `speakers` | same names; `speakers` comes from `/etc/init.d/S45amplifier-settings` (`/tmp/asound-vol.conf`) | same control on `default`; `set_volume.sh` is `amixer set 'Master' <percent>%`, so the curve is linear in percent (no dB offset) |
 | alsa-lib | 1.2.10, versioned | 1.2.1.2, unversioned | 1.2.1.2, unversioned |
 | Earcons | `common/spotter_*.mp3`, `timer.wav`, `ru-RU/vins_error.wav` | same except `ru-RU/playback_error.mp3` instead of `vins_error.wav` | `ru-RU/playback_error.opus` |
-| Boot hook | `onboot.sh` → `/data/quasar/rootkeeper.sh` | same (line 67); `q stop` available | same; `q stop` available |
+| Boot hook | `onboot.sh` → `/data/quasar/rootkeeper.sh` | same (line 67); `q stop` available | vendor root (`activate_adb_*` markers): no `rootkeeper.sh`, `onboot.sh` never runs one, so no boot hook; `q stop` available |
 | Zigbee | Telink B91 on `/dev/ttyS2`, reset/boot via `zb_control` (see Zigbee radio) | none | none (no `ttyS2`, no `zb_control`) |
 
 Lite 2 measurements: echo test (speech played through `speakers`, raw capture → `ww_offline`):
@@ -351,8 +351,12 @@ press. The button emits no evdev event (`sar0_pad0` carries 582/115/114 only), a
 not update `data/is_speaker_muted`, so that file cannot be used as the state. Verified on hardware
 (firmware 0.369): VQE preset loading and capture, wake word → HA pipeline → TTS, playback through
 the firmware's 32-bit GStreamer on `default`, Sendspin playback from Music Assistant (FLAC), the LED
-ring, touch keys, volume and the GPIO mic mute.
-Not yet verified: the installer, the clock (see above), spotter quality (the models in
+ring, touch keys, volume and the GPIO mic mute, and install/remove with the same steps as
+`installer/` (a host-side script: model detection, sha256, atomic scripts, `ctl.sh enable` and back).
+The vendor root of this firmware has no `/data/quasar/rootkeeper.sh` and `onboot.sh` never calls
+one, so the installer's boot hook is inert here: pulsar runs until the next reboot, then the stock
+Yandex stack returns. A rootkeeper-compatible root (as on the Midi / Lite 2) is needed for autostart.
+Not yet verified: the Go installer itself, the clock (see above), spotter quality (the models in
 `spotter_models/` are the Lite 2's).
 
 ## Conventions
