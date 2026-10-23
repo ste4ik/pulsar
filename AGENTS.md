@@ -122,8 +122,12 @@ all-zeros key is then accepted so HA can provision); corrupt = API fails closed.
 replaced by the crash-loop rollback. Log: `/tmp/pulsar.log` (`ctl.sh log N`; rotated
 at 1 MB by `supervise.sh`, one `.1` kept). Boot chain:
 `onboot.sh` (firmware) → `/data/quasar/rootkeeper.sh` → `boot.sh` → waits for quasar, `q stop` →
-`supervise.sh` restart loop while `enabled` exists. `ctl.sh reload` restarts the supervisor itself
-(needed after replacing `supervise.sh`; the installer does it when the script changed).
+`supervise.sh` restart loop while `enabled` exists. On firmware whose `onboot.sh` never calls
+`rootkeeper.sh` (Mini 2 `0.369`) the same hook line is appended to `/etc/init.d/S99quasar` by the
+host install scripts (original in `/data/pulsar/S99quasar.orig`, rootfs remounted rw for the write
+and back to ro; the Go installer does not do this and `/system` is still never touched).
+`ctl.sh reload` restarts the supervisor itself (needed after replacing `supervise.sh`; the installer
+does it when the script changed).
 
 Updates from HA (`src/update/`, entities "Firmware" + "Auto update"): the daemon checks
 `https://github.com/<repo>/releases/latest` (its redirect to `/releases/tag/<tag>`; the REST API
@@ -149,7 +153,12 @@ device whose HA already holds a key cannot talk to HA until the key is removed t
 - **Never break root adb access.** Do not touch adbd, `/data/quasar/activate_*` markers, or the
   existing contents of `/data/quasar/rootkeeper.sh`. It is shared with other tooling: only insert
   hook lines, and only before its endless `while` loop (code after the loop never runs).
-- Do not modify the rootfs (`/system`, `/etc`); everything persistent lives in `/data`.
+- Do not modify the rootfs (`/system`, `/etc`); everything persistent lives in `/data`. The one
+  approved exception is the boot hook in `/etc/init.d/S99quasar` on Mini 2 `0.369`, added and
+  removed only by the host install/remove scripts in `porting_mini2/` (outside this repo): keep a
+  copy of the original in `/data/pulsar/S99quasar.orig` before the first write, `sh -n` the new
+  file, replace it with an atomic `mv`, verify sha256, and leave the rootfs `ro` (a trap does this
+  on any error). Never patch S99quasar by hand from this repo's tools.
 - Several devices may share one adb server: always pass `adb -s <serial>`.
 - `adb shell` on this firmware is a pty: output has `\r`, is not binary-safe (use push/pull) and
   the exit status is always 0 (see `sh()` in `installer/adb.go`).
@@ -330,7 +339,7 @@ carried over).
 | Volume | "Master Playback Volume" softvol on `speakers` | same names; `speakers` comes from `/etc/init.d/S45amplifier-settings` (`/tmp/asound-vol.conf`) | same control on `default`; `set_volume.sh` is `amixer set 'Master' <percent>%`, so the curve is linear in percent (no dB offset) |
 | alsa-lib | 1.2.10, versioned | 1.2.1.2, unversioned | 1.2.1.2, unversioned |
 | Earcons | `common/spotter_*.mp3`, `timer.wav`, `ru-RU/vins_error.wav` | same except `ru-RU/playback_error.mp3` instead of `vins_error.wav` | `ru-RU/playback_error.opus` |
-| Boot hook | `onboot.sh` → `/data/quasar/rootkeeper.sh` | same (line 67); `q stop` available | vendor root (`activate_adb_*` markers): no `rootkeeper.sh`, `onboot.sh` never runs one, so no boot hook; `q stop` available |
+| Boot hook | `onboot.sh` → `/data/quasar/rootkeeper.sh` | same (line 67); `q stop` available | vendor root (`activate_adb_*` markers): no `rootkeeper.sh`, `onboot.sh` never runs one; host scripts append the hook to `/etc/init.d/S99quasar` (rootfs rw → ro, original kept); `q stop` available |
 | Zigbee | Telink B91 on `/dev/ttyS2`, reset/boot via `zb_control` (see Zigbee radio) | none | none (no `ttyS2`, no `zb_control`) |
 
 Lite 2 measurements: echo test (speech played through `speakers`, raw capture → `ww_offline`):
@@ -354,8 +363,15 @@ the firmware's 32-bit GStreamer on `default`, Sendspin playback from Music Assis
 ring, touch keys, volume and the GPIO mic mute, and install/remove with the same steps as
 `installer/` (a host-side script: model detection, sha256, atomic scripts, `ctl.sh enable` and back).
 The vendor root of this firmware has no `/data/quasar/rootkeeper.sh` and `onboot.sh` never calls
-one, so the installer's boot hook is inert here: pulsar runs until the next reboot, then the stock
-Yandex stack returns. A rootkeeper-compatible root (as on the Midi / Lite 2) is needed for autostart.
+one, so the Go installer's boot hook is inert here: with it, pulsar runs until the next reboot,
+then the stock Yandex stack returns. The host install scripts (`porting_mini2/pulsar-install.sh`
+and `.ps1`, outside this repo) instead append the hook to `/etc/init.d/S99quasar`: `onboot.sh`
+still runs first (adb, network, audio), then a backgrounded `boot.sh` waits for
+`quasar_launcher2`, does `q stop` and execs `supervise.sh`, so `rcS` never blocks. Verified on
+hardware (firmware 0.369): two reboots, both times exactly one `=== start` in the log, no crash or
+exit record, `pulsar` + `supervise.sh` up, no `quasar_launcher2`/`maind`; remove restores S99quasar
+byte-for-byte (sha256) and the rootfs goes back to `ro`. A firmware OTA replaces the rootfs, so the
+patch has to be re-applied after an update; the `S99quasar.orig` copy in `/data` survives.
 Not yet verified: the Go installer itself, the clock (see above), spotter quality (the models in
 `spotter_models/` are the Lite 2's).
 
