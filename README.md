@@ -182,42 +182,32 @@ Home Assistant по протоколу ESPHome Native API и выглядит в
 `boot.sh` дожидается `quasar_launcher2`, гасит её и запускает супервизор pulsar. Повторный запуск
 обновляет установленную версию; `--yes` не задаёт вопросов, `--no-boot` не трогает автозагрузку.
 
-### Готовый установщик
+### Готовый бинарник из релиза
 
-После того как поддержка Мини 2 попала в релиз, можно поставить её и установщиком из
-[последнего релиза](https://github.com/Morvex885/pulsar/releases/latest): скачайте архив для
-своего компьютера, распакуйте и запустите `pulsar-install`.
+Собирать самому не обязательно: в [релизах этого форка](https://github.com/ste4ik/pulsar/releases/latest)
+лежит готовый `pulsar-armhf.bin` и `SHA256SUMS`. Установщик из релизов `Morvex885/pulsar` модель
+`station-mini2` пока не знает, поэтому бинарник передаётся скрипту этого порта явно.
 
-| Компьютер | Архив |
-|---|---|
-| Windows | `pulsar-windows-amd64.zip` |
-| macOS (Apple Silicon) | `pulsar-macos-arm64.tar.gz` |
-| macOS (Intel) | `pulsar-macos-amd64.tar.gz` |
-| Linux x86-64 | `pulsar-linux-amd64.tar.gz` |
-| Linux ARM64 (например, Raspberry Pi) | `pulsar-linux-arm64.tar.gz` |
-
-Linux и macOS (подставьте имя своего архива):
+Linux и macOS:
 
 ```sh
-curl -fLO https://github.com/Morvex885/pulsar/releases/latest/download/pulsar-linux-amd64.tar.gz
-tar -xzf pulsar-linux-amd64.tar.gz && cd pulsar
-./pulsar-install                 # найти колонки в сети и выбрать, куда ставить
-./pulsar-install 192.168.1.50    # или сразу по адресу
-./pulsar-install --list          # только показать найденное
+curl -fLO https://github.com/ste4ik/pulsar/releases/latest/download/pulsar-armhf.bin
+curl -fLO https://github.com/ste4ik/pulsar/releases/latest/download/SHA256SUMS
+grep 'pulsar-armhf.bin$' SHA256SUMS | sha256sum -c -   # на macOS: shasum -a 256 pulsar-armhf.bin
+./pulsar-install.sh 192.168.1.50:5555 --bin ./pulsar-armhf.bin
 ```
 
-Windows (PowerShell или командная строка):
+Windows (PowerShell):
 
-```bat
-curl.exe -fLO https://github.com/Morvex885/pulsar/releases/latest/download/pulsar-windows-amd64.zip
-tar -xf pulsar-windows-amd64.zip
-cd pulsar
-.\pulsar-install.exe
+```powershell
+curl.exe -fLO https://github.com/ste4ik/pulsar/releases/latest/download/pulsar-armhf.bin
+Get-FileHash .\pulsar-armhf.bin -Algorithm SHA256   # сверить со строкой в SHA256SUMS
+.\pulsar-install.ps1 192.168.1.50:5555 -Bin .\pulsar-armhf.bin
 ```
 
-Изменяется только `/data`: системный раздел установщик не трогает. На прошивке `0.369` его хук
-автозагрузки (`rootkeeper.sh`) не срабатывает — см. «Требования»; автозапуск ставит хук в
-`S99quasar` из скриптов этого порта.
+`pulsar-armhf.debug` — необязательный файл с отладочными символами для `addr2line`. Установщик
+меняет только `/data`; единственное исключение — хук автозагрузки в `S99quasar` на прошивке
+`0.369`, описанный выше.
 
 ### Home Assistant
 
@@ -246,6 +236,12 @@ cd pulsar
 Сборки не из релиза (версия — хеш коммита, например `1fa4934`) обновление тоже видит, но
 автоматически не обновляются: только кнопкой. Обновляется только демон; `boot.sh`, `supervise.sh`
 и `ctl.sh` обновляет установщик.
+
+В этой сборке для Мини 2 апдейтер по-прежнему смотрит на `Morvex885/pulsar` (так задумано в
+оригинале): релизы форка он не видит, а будущие релизы upstream не содержат поддержки Мини 2 —
+ставить их на Мини 2 нельзя, демон не найдёт модель и завершится. Обновляйтесь вручную из
+[релизов форка](https://github.com/ste4ik/pulsar/releases/latest) тем же способом, что и при
+установке.
 
 ### Music Assistant
 
