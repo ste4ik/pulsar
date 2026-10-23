@@ -32,10 +32,13 @@ namespace cs {
 
 namespace {
 
-constexpr float kCometLen24 = 7.f;    // thinking comet length on the 24-LED ring
 constexpr int kFrameMs = 33;          // ~30 fps while animating
 constexpr float kMaxScale = 0.8f;     // global cap: never drive LEDs above 80 % PWM
 constexpr int64_t kVolumeShowMs = 1500;
+constexpr int64_t kSwipeShowMs = 700;  // one comet lap for a track change
+constexpr int64_t kHoldShowMs = 900;   // action-button hold: one smooth fade-in/fade-out
+constexpr int64_t kThinkWaveMs = 1400;  // assistant "thinking" ripple period
+constexpr int64_t kSpeakWaveMs = 900;   // assistant answer ripple period
 constexpr int64_t kWarnEveryMs = 10000;  // rate limit for repeated per-frame write warnings
 constexpr const char *kLedDir = "/sys/class/leds/";
 
@@ -62,6 +65,15 @@ Col hsv(float h, float s, float v) {
 
 // Smooth 0..1 oscillation with period ms, starting at minimum.
 float wave(int64_t t, int64_t period) { return 0.5f - 0.5f * std::cos(float(t % period) / float(period) * 6.2831853f); }
+
+// Wave front around the home LED (index 0) of an n-LED ring: the phase depends only on the
+// distance along the ring, so both sides mirror each other and the pattern reads as rings
+// expanding from home rather than a blob running around.
+float ring_wave(int i, int n, int64_t t, int64_t period_ms) {
+  const float lambda = std::max(1.f, n / 2.f);  // home -> far side is one full cycle
+  const float ph = float(t % period_ms) / float(period_ms);
+  return 0.5f + 0.5f * std::cos(6.2831853f * (std::min(i, n - i) / lambda - ph));
+}
 
 uint8_t to8(float v, float dim) {
   v = std::max(0.f, std::min(1.f, v)) * kMaxScale * dim;
@@ -100,6 +112,9 @@ struct Leds::Impl {
   std::string effect;
   float volume = 0;
   int64_t volume_until = 0;
+  int64_t swipe_t0 = 0, swipe_until = 0;
+  int swipe_dir = 0;  // +1 next, -1 previous
+  int64_t hold_t0 = 0, hold_until = 0;
   uint64_t timer = 0;
   AmbientDimmer dimmer;
   int64_t warn_t[2] = {0, 0};  // last fb0/fb1 write warning
@@ -248,30 +263,21 @@ struct Leds::Impl {
         break;
       }
       case UiState::LISTENING: {
-        float k = 0.55f + 0.45f * wave(t, 2000);
+        // Listening: the whole ring breathes evenly, a calm "microphone is open" glow - no
+        // travelling light.
+        const float k = 0.34f + 0.42f * wave(t, 2400);
         for (int i = 0; i < n; i++) ring[i] = kCyan * k;
         break;
       }
       case UiState::THINKING: {
-        // Two comets rotating (one turn per 1.2 s).
-        const float len = std::max(1.5f, kCometLen24 * n / 24.f);
-        float head = float(t % 1200) / 1200.f * n;
-        for (int i = 0; i < n; i++) {
-          for (int c = 0; c < 2; c++) {
-            float d = std::fmod(head + c * (n / 2.f) - i + n * 2, float(n));  // distance behind head
-            if (d < len) {
-              Col v = kBlue * (1.f - d / len);
-              ring[i] = {std::max(ring[i].r, v.r), std::max(ring[i].g, v.g), std::max(ring[i].b, v.b)};
-            }
-          }
-          ring[i] = {std::max(ring[i].r, kBlue.r * 0.12f), std::max(ring[i].g, kBlue.g * 0.12f),
-                     std::max(ring[i].b, kBlue.b * 0.12f)};
-        }
+        // The request is being processed: a soft wave leaves the home LED and runs out to both
+        // sides. Symmetric, with no hard edges and no rotating head.
+        for (int i = 0; i < n; i++) ring[i] = kBlue * (0.12f + 0.72f * ring_wave(i, n, t, kThinkWaveMs));
         break;
       }
       case UiState::SPEAKING: {
-        float k = 0.45f + 0.55f * wave(t, 700);
-        for (int i = 0; i < n; i++) ring[i] = kBlue * k;
+        // The answer plays: the same wave, quicker and brighter, as if pouring out of the ring.
+        for (int i = 0; i < n; i++) ring[i] = kWake * (0.3f + 0.62f * ring_wave(i, n, t, kSpeakWaveMs));
         break;
       }
       case UiState::ERROR: {
@@ -285,7 +291,9 @@ struct Leds::Impl {
         break;
       }
       case UiState::MUTED:
-        for (int i = 0; i < n; i++) ring[i] = kRed * 0.25f;
+        // Steady red, clearly visible but below ERROR's 0.9 blink. With the gamma-2.0 curve 0.25
+        // rendered at ~10/255 and read as "ring off" on the Mini 2.
+        for (int i = 0; i < n; i++) ring[i] = kRed * 0.7f;
         animated = false;
         break;
       case UiState::TIMER_RING: {
@@ -295,13 +303,45 @@ struct Leds::Impl {
       }
     }
     if (now < volume_until) {
-      // Volume arc overlay: v*n LEDs from LED 0, partial last LED, remaining ring dark.
-      float lit = volume * n;
+      // Volume bar from LED 0. The leading LED brightens continuously instead of switching on
+      // (a faint sixth LED looked like the level jumping between whole LEDs), and the bar fades
+      // out over its last 250 ms.
+      const float pos = volume * n;
+      const float fade = std::min(1.f, float(volume_until - now) / 250.f);
       for (int i = 0; i < n; i++) {
-        float k = std::max(0.f, std::min(1.f, lit - i));
-        ring[i] = kWhite * (0.15f + 0.65f * k) * (k > 0 ? 1.f : 0.f);
+        const float k = std::max(0.f, std::min(1.f, (pos - i) * 1.6f));
+        ring[i] = kWhite * (0.8f * k * fade);
       }
       animated = true;  // need a frame when the overlay expires
+    }
+    if (swipe_until && now < swipe_until) {
+      // Track change: one comet lap in the direction of the gesture. The head has a soft leading
+      // edge and the tail fades to zero (the old cutoff switched LEDs off at 20 % brightness and
+      // the head lit each new LED at full brightness, which read as steps on six LEDs). The head
+      // starts and ends completely off the ring, so the animation fades in and out instead of
+      // popping. Smoothstep easing over the lap keeps the ends soft.
+      const float p = float(now - swipe_t0) / float(swipe_until - swipe_t0);
+      const float ps = p * p * (3.f - 2.f * p);
+      const float tail = std::max(2.f, n * 0.5f);
+      const float front = 1.2f;  // soft leading edge, LED units
+      const float span = (n - 1) + tail + front;
+      const float head = swipe_dir > 0 ? -front + ps * span : (n - 1 + front) - ps * span;
+      for (int i = 0; i < n; i++) {
+        const float d = swipe_dir > 0 ? head - i : i - head;  // distance behind the head
+        float k = d >= 0 ? 1.f - d / tail : 1.f + d / front;
+        k = std::max(0.f, std::min(1.f, k));
+        k = k * k * (3.f - 2.f * k);
+        if (k > 0) ring[i] = kCyan * (0.85f * k);
+      }
+      animated = true;  // need a frame when the overlay expires
+    }
+    if (hold_until && now < hold_until) {
+      // Action-button hold (play/pause): the whole ring rises and falls once, smoothly, instead of
+      // a rotating spinner.
+      const float p = float(now - hold_t0) / float(hold_until - hold_t0);
+      const float k = std::sin(3.14159265f * p);
+      for (int i = 0; i < n; i++) ring[i] = kCyan * (0.85f * k);
+      animated = true;  // need a frame when the pulse expires
     }
     return animated;
   }
@@ -388,6 +428,23 @@ void Leds::show_volume(float v) {
   auto &d = *impl_;
   d.volume = std::max(0.f, std::min(1.f, v));
   d.volume_until = Loop::now_ms() + kVolumeShowMs;
+  d.frame();
+}
+
+void Leds::show_swipe(bool next) {
+  auto &d = *impl_;
+  d.volume_until = 0;  // the swipe's first zone already flashed a volume arc
+  d.swipe_dir = next ? 1 : -1;
+  d.swipe_t0 = Loop::now_ms();
+  d.swipe_until = d.swipe_t0 + kSwipeShowMs;
+  d.frame();
+}
+
+void Leds::show_hold() {
+  auto &d = *impl_;
+  d.volume_until = 0;  // the gesture is the action button: no volume bar of its own
+  d.hold_t0 = Loop::now_ms();
+  d.hold_until = d.hold_t0 + kHoldShowMs;
   d.frame();
 }
 

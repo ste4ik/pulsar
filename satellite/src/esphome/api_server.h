@@ -105,7 +105,7 @@ enum class SelectId : uint32_t { CLOCK_FACE = 1, ZIGBEE_MODE = 2 };
 enum class ButtonId : uint32_t { ZIGBEE_JOIN = 1, ZIGBEE_LEAVE = 2 };
 enum class TextSensorId : uint32_t { ZIGBEE = 1 };
 enum class ActionId : uint32_t { CLOCK_SHOW_TEXT = 1, CLOCK_SHOW_FACE = 2 };  // args (text|face, seconds)
-enum class EventId : uint32_t { BUTTON = 1 };             // event types: "action", "action_long", "volume_up", "volume_down"
+enum class EventId : uint32_t { BUTTON = 1 };             // event types: "action", "volume_up", "volume_down"
 
 // "Firmware" update entity (UpdateStateResponse). Mirrors api.proto UpdateCommand.
 enum class UpdateCommand : uint32_t { NONE = 0, INSTALL = 1, CHECK = 2 };

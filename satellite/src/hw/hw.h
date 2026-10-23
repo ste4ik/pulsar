@@ -40,6 +40,11 @@ class Leds {
   void set_user_light(bool on, Rgb color, float brightness, const std::string &effect);
   // Transient volume indicator (0..1) shown on ring for ~1.5 s.
   void show_volume(float v);
+  // Transient track-change indicator: a comet sweeps once across the ring in the direction of
+  // the swipe. Replaces a volume arc still on screen (the swipe's first zone briefly showed one).
+  void show_swipe(bool next);
+  // Transient action-button hold feedback (play/pause): the whole ring fades in and out once.
+  void show_hold();
   // Ambient light: dims the ring and logo (smoothed, with hysteresis; floor keeps them visible).
   void set_ambient_lux(float lux);
 
@@ -85,19 +90,25 @@ class Clock {
   std::unique_ptr<Impl> impl_;
 };
 
-enum class Button { ACTION, VOLUME_UP, VOLUME_DOWN };
+// SWIPE_NEXT / SWIPE_PREV are synthesized from a sequence of the three touch keys (Model::swipe_keys,
+// see Input); they arrive as SHORT presses.
+enum class Button { ACTION, VOLUME_UP, VOLUME_DOWN, SWIPE_NEXT, SWIPE_PREV };
 enum class Press { SHORT, LONG };
 
 class Input {
  public:
   using ButtonCb = std::function<void(Button, Press)>;
   using MuteCb = std::function<void(bool hw_muted)>;
+  // A volume key was followed by the action zone: the touch may be a swipe, so feedback for that
+  // volume key should wait until the gesture resolves.
+  using SwipeHintCb = std::function<void()>;
   Input(Loop &loop, const Model &model);
   ~Input();
   bool open();  // evdev: Model::keys_input (touch keys), Model::mute_input or Model::mute_gpio (mic mute)
   bool hw_muted() const;
   void on_button(ButtonCb cb);
   void on_mute(MuteCb cb);
+  void on_swipe_hint(SwipeHintCb cb);
 
  private:
   struct Impl;

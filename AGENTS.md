@@ -185,8 +185,10 @@ From `/system/vendor/quasar/libyandex_evil.so`:
 - Spotter type → VQE output: type 0 = main channel. The wake model (`spotter_models/activation/alisa`)
   needs `VQE_OMNI_WITH_GAIN` (9); the command model (`spotter_models/command`, single channel)
   only works with `VQE_OMNI` (6). Measured with `ww_offline`; re-measure when changing it.
-- The command spotter only runs while something plays, during TTS/announcements/timer ring, or
-  2.5 s after the wake word (as `maind` does), to avoid false positives from conversation.
+- The command spotter only runs while something plays, during TTS/announcements/timer ring, 2.5 s
+  after the wake word (as `maind` does), or for a minute after the music stops (a paused Sendspin
+  group reports STOPPED, so otherwise "продолжи"/"играй" could never be heard), to avoid false
+  positives from conversation.
 - `GetOutputChannelData` always returns no error; an absent output type yields `n == 0`.
 - `YandexVqeC_Config_GetOutputChannelCount` takes `(cfg, type, int *out)`; the other `Config_Get*`
   getters return the value directly.
@@ -333,7 +335,7 @@ carried over).
 | Spotters | alisa: types 0, 3, 4; command: type 0 | alisa/yandex: types 0 and 4 (1 ch each); command: type 0. Models in `spotter_models/` are plum-tuned | same tarball as the Lite 2 in `spotter_models/`, not yet measured |
 | Ring | `/dev/fb0` 24×1 + `/dev/fb1` logo 6×1, BGR | `/dev/fb0` "YNDX LED ring" 3×1, 24 bpp, BGR; trigger `led_ring_fb`; sysfs `plum:<color>:ring1..3`; no logo | no framebuffer or trigger: sysfs `mini2:<color>:ring1..6` (IS31FL3236 on i2c 1-003c); no logo |
 | Clock | `cucumber:white:clock-<seg><digit>`, dimming via chip `current` | `plum:white:clock<SEG><pos>`: A–G × 0–3, colon `DH`+`DL`; `H0..3`, `DM`, `DEGREE` kept dark (`quasar.cfg` `/leds/clock`); dimming via per-LED `brightness` 0–255 | wired as `mini2:white:clock<A..G><1..4>`, colon `PLUS1`+`PLUS2`, `DEGREE`/`MINUS` dark (`quasar.cfg`), but the second IS31FL3236 (i2c 0-003f) fails to probe on this firmware: no LEDs exist, `Clock::open()` finds nothing and stays off |
-| Keys | `awinic_sar`: 582 action, 115/114 volume | `aw9610x`: same codes | `sar0_pad0` (aw9610x SAR, event0): same codes |
+| Keys | `awinic_sar`: 582 action, 115/114 volume | `aw9610x`: same codes | `sar0_pad0` (aw9610x SAR, event0): same codes; a finger drawn across the strip is 114→582→115 (next track) or the reverse (previous), `Model::swipe_keys` |
 | Mic mute | input `mute`: `SW_MUTE_DEVICE` | input `gpio-keys`: `SW_MUTE_DEVICE` (+ `KEY_MUTE`) | no evdev switch: maind polls GPIOZ_3 (global 414, pull-up, edge `falling`) itself, active low; the daemon does the same from sysfs |
 | Light sensor | `ltr308als01` (iio) | same | none (only the SoC SAR ADC) |
 | Volume | "Master Playback Volume" softvol on `speakers` | same names; `speakers` comes from `/etc/init.d/S45amplifier-settings` (`/tmp/asound-vol.conf`) | same control on `default`; `set_volume.sh` is `amixer set 'Master' <percent>%`, so the curve is linear in percent (no dB offset) |
@@ -350,7 +352,13 @@ buffer when reading and VQE shared a thread; hence the separate capture thread w
 Not yet verified on the Lite 2: wake word → HA pipeline → TTS end to end, GStreamer playback
 through the 32-bit `libquasar_gstreamer.so`, Sendspin playback, LED animations by eye.
 
-Mini 2 notes: model detected from `yandex,station-mini2`; firmware 0.369. The clock chip's probe
+Mini 2 notes: model detected from `yandex,station-mini2`; firmware 0.369. The three touch zones
+form one strip: a finger drawn across them reaches the kernel as the key codes in the order they
+were touched, so `Input` turns 114→582→115 into `SWIPE_NEXT` and the reverse into `SWIPE_PREV`
+(`Model::swipe_keys`; maind's `SwipeManager` resolves the same sequences). The zones would
+otherwise act as a volume step and an assistant tap, so the swipe suppresses them: the third
+zone's step is not emitted, the assistant's SHORT action is deferred and dropped, and the
+controller restores the volume the first zone already changed. The clock chip's probe
 failure (`register write to 0x4F failed (error -6)`) is the only reason the clock is dark - the DT
 node is fine and the daemon never touches it, so a firmware or driver fix restores it without code
 changes. The mic mute button is momentary, but the microphone circuit latches it: GPIOZ_3 (global

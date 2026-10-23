@@ -15,6 +15,9 @@
 //   instead, driving one latched GPIO line: pulled up, low while muted, so the level is the state.
 // ACTION: SHORT on release before 800 ms, LONG as soon as it has been held for 800 ms.
 // VOLUME_*: SHORT on press, auto-repeated every 200 ms after being held for 500 ms, for at most 10 s.
+// SWIPE_*: on models whose zones form one strip (Model::swipe_keys) a finger drawn across them
+// arrives as the three key codes in order; such a sequence becomes SWIPE_NEXT / SWIPE_PREV and
+// what its zones would otherwise do (volume step, assistant SHORT) is suppressed.
 // Devices that disappear (ENODEV) are looked up again every 3 s; SYN_DROPPED triggers a state resync.
 #include <fcntl.h>
 #include <linux/input.h>
@@ -22,9 +25,11 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <sstream>
+#include <vector>
 
 #include "core/log.h"
 #include "hw/hw.h"
@@ -45,6 +50,10 @@ constexpr int64_t kGpioPollMs = 100;   // GPIO mute switch sampling period
 // closer than 300 ms to the previous one are dropped.
 constexpr int64_t kMinActionPressMs = 56;
 constexpr int64_t kMinActionGapMs = 300;
+// A swipe across the top strip touches the three zones in order and is only known when the third
+// zone reacts. The same window covers detecting the sequence and holding back what the first two
+// zones would otherwise do (a volume step and the assistant's SHORT action).
+constexpr int64_t kSwipeWindowMs = 700;
 
 // Finds /dev/input/eventN for the device with the given name.
 std::string find_event_dev(const std::string &name) {
@@ -83,6 +92,7 @@ struct Input::Impl {
   bool muted = false;
   ButtonCb button_cb;
   MuteCb mute_cb;
+  SwipeHintCb swipe_hint_cb;
 
   int64_t action_down = 0;  // 0 = not pressed
   int64_t last_action_ms = 0;
@@ -93,12 +103,23 @@ struct Input::Impl {
   int64_t repeat_since = 0;
   uint64_t retry_timer = 0;
   uint64_t mute_poll_timer = 0;
+  // Swipe detection (Model::swipe_keys): key-downs of the last kSwipeWindowMs.
+  struct KeyDown {
+    int code;
+    int64_t ms;
+  };
+  std::vector<KeyDown> recent;
+  uint64_t action_defer_timer = 0;  // ACTION SHORT held back in case the touch becomes a swipe
+  int64_t last_volume_ms = 0;       // last volume key-down
+  unsigned down_mask = 0;           // 1 action, 2 volume up, 4 volume down
+  bool swipe_active = false;        // a swipe was recognized; stay quiet until all keys are up
+  bool action_swiped = false;       // the current ACTION press belongs to a swipe
   // After SYN_DROPPED the kernel discards events up to the next SYN_REPORT; the state is then
   // read back from the device.
   bool keys_dropped = false, mute_dropped = false;
 
   ~Impl() {
-    for (uint64_t t : {action_timer, repeat_timer, retry_timer, mute_poll_timer})
+    for (uint64_t t : {action_timer, repeat_timer, action_defer_timer, retry_timer, mute_poll_timer})
       if (t) loop.cancel_timer(t);
     close_dev(keys_fd);
     close_dev(mute_fd);
@@ -112,30 +133,94 @@ struct Input::Impl {
     fd = -1;
   }
 
+  static const char *button_name(Button b) {
+    switch (b) {
+      case Button::ACTION: return "action";
+      case Button::VOLUME_UP: return "volume up";
+      case Button::VOLUME_DOWN: return "volume down";
+      case Button::SWIPE_NEXT: return "swipe next";
+      case Button::SWIPE_PREV: return "swipe prev";
+    }
+    return "?";
+  }
+
   void emit(Button b, Press p) {
-    LOGI("input: %s %s", b == Button::ACTION ? "action" : b == Button::VOLUME_UP ? "volume up" : "volume down",
-         p == Press::LONG ? "long" : "short");
+    LOGI("input: %s %s", button_name(b), p == Press::LONG ? "long" : "short");
     if (button_cb) button_cb(b, p);
   }
 
   // Forgets every pressed key (device lost or events dropped): no release will ever arrive.
   void release_all() {
-    if (action_timer) loop.cancel_timer(action_timer);
-    if (repeat_timer) loop.cancel_timer(repeat_timer);
-    action_timer = repeat_timer = 0;
+    for (uint64_t t : {action_timer, repeat_timer, action_defer_timer})
+      if (t) loop.cancel_timer(t);
+    action_timer = repeat_timer = action_defer_timer = 0;
     action_down = 0;
     repeat_code = 0;
+    down_mask = 0;
+    swipe_active = false;
+    action_swiped = false;
+    recent.clear();
+  }
+
+  static unsigned zone_bit(int code) {
+    return code == kKeyAction ? 1u : code == KEY_VOLUMEUP ? 2u : 4u;
+  }
+
+  // A zone that repeats its own key while the finger rests on it must not break the sequence, so
+  // consecutive equal codes collapse into one entry. Entries older than the window are dropped.
+  void remember_key(int code, int64_t now) {
+    if (!recent.empty() && recent.back().code == code) {
+      recent.back().ms = now;
+    } else {
+      recent.push_back({code, now});
+      if (recent.size() > 8) recent.erase(recent.begin());
+    }
+    while (!recent.empty() && now - recent.front().ms > kSwipeWindowMs) recent.erase(recent.begin());
+  }
+
+  // 1: left-to-right (next), -1: right-to-left (previous), 0: not a swipe. The strip order is
+  // volume down, action, volume up, so the middle zone must have been the action key.
+  int swipe_dir(int64_t now) const {
+    if (!model.swipe_keys || recent.size() < 3) return 0;
+    const KeyDown &a = recent[recent.size() - 3], &b = recent[recent.size() - 2],
+                  &c = recent[recent.size() - 1];
+    if (now - a.ms > kSwipeWindowMs || b.code != kKeyAction) return 0;
+    if (a.code == KEY_VOLUMEDOWN && c.code == KEY_VOLUMEUP) return 1;
+    if (a.code == KEY_VOLUMEUP && c.code == KEY_VOLUMEDOWN) return -1;
+    return 0;
+  }
+
+  void trigger_swipe(int dir) {
+    swipe_active = true;
+    action_swiped = action_down != 0;
+    recent.clear();
+    // The first zone already emitted its volume step (which the controller undoes) and armed
+    // auto-repeat; the second zone's SHORT action may be pending. Neither belongs to a swipe.
+    if (action_defer_timer) loop.cancel_timer(action_defer_timer);
+    if (repeat_timer) loop.cancel_timer(repeat_timer);
+    action_defer_timer = repeat_timer = 0;
+    repeat_code = 0;
+    emit(dir > 0 ? Button::SWIPE_NEXT : Button::SWIPE_PREV, Press::SHORT);
   }
 
   void on_key(int code, int value) {
+    const int64_t now = Loop::now_ms();
     if (code == kKeyAction) {
       if (value == 1 && !action_down) {
-        action_down = Loop::now_ms();
+        action_down = now;
         action_long_sent = false;
+        action_swiped = false;
+        if (model.swipe_keys) {
+          down_mask |= zone_bit(code);
+          remember_key(code, now);
+          // A volume key just went down, so this may be the middle zone of a swipe: let the
+          // controller hold the volume arc back until the sequence resolves.
+          if (swipe_hint_cb && last_volume_ms && now - last_volume_ms <= kSwipeWindowMs) swipe_hint_cb();
+        }
         action_timer = loop.add_timer(kLongPressMs, [this] {
           action_timer = 0;
           action_long_sent = true;
-          emit(Button::ACTION, Press::LONG);
+          if (!swipe_active && !action_swiped) emit(Button::ACTION, Press::LONG);
           // Stuck-key guard: a release that never arrives must not block later presses.
           action_timer = loop.add_timer(kMaxHoldMs - kLongPressMs, [this] {
             action_timer = 0;
@@ -144,13 +229,20 @@ struct Input::Impl {
           });
         });
       } else if (value == 0 && action_down) {
-        const int64_t now = Loop::now_ms(), held = now - action_down;
+        const int64_t held = now - action_down;
         action_down = 0;
+        if (model.swipe_keys) {
+          down_mask &= ~zone_bit(code);
+          if (!down_mask) swipe_active = false;
+        }
         if (action_timer) {
           loop.cancel_timer(action_timer);
           action_timer = 0;
         }
-        if (action_long_sent) return;
+        if (action_long_sent || action_swiped) {
+          action_swiped = false;
+          return;
+        }
         // Capacitive noise (a hand near the top, flipping the mute switch) produces very short
         // touches, often in bursts; maind's "buttonsClickLimiter" drops the same.
         if (held < kMinActionPressMs || now - last_action_ms < kMinActionGapMs) {
@@ -158,6 +250,16 @@ struct Input::Impl {
           return;
         }
         last_action_ms = now;
+        // The finger may still be on its way to the third zone: a swipe is only known when that
+        // zone is touched. If the sequence started with a volume key, hold the SHORT press back
+        // until its window closes; trigger_swipe() cancels it.
+        if (model.swipe_keys && last_volume_ms && now - last_volume_ms <= kSwipeWindowMs) {
+          action_defer_timer = loop.add_timer(last_volume_ms + kSwipeWindowMs - now, [this] {
+            action_defer_timer = 0;
+            if (!swipe_active) emit(Button::ACTION, Press::SHORT);
+          });
+          return;
+        }
         emit(Button::ACTION, Press::SHORT);
       }
       return;
@@ -168,10 +270,17 @@ struct Input::Impl {
     }
     Button b = code == KEY_VOLUMEUP ? Button::VOLUME_UP : Button::VOLUME_DOWN;
     if (value == 1) {
+      if (model.swipe_keys) {
+        down_mask |= zone_bit(code);
+        last_volume_ms = now;
+        remember_key(code, now);
+        if (swipe_active) return;  // the tail of a recognized swipe
+        if (int dir = swipe_dir(now)) return trigger_swipe(dir);
+      }
       emit(b, Press::SHORT);
       if (repeat_timer) loop.cancel_timer(repeat_timer);
       repeat_code = code;
-      repeat_since = Loop::now_ms();
+      repeat_since = now;
       repeat_timer = loop.add_timer(kRepeatDelayMs, [this, b] {
         if (repeat_timer) loop.cancel_timer(repeat_timer);
         repeat_timer = loop.add_timer(kRepeatMs, [this, b] {
@@ -186,10 +295,16 @@ struct Input::Impl {
         }, kRepeatMs);
         emit(b, Press::SHORT);
       });
-    } else if (value == 0 && repeat_code == code) {
-      if (repeat_timer) loop.cancel_timer(repeat_timer);
-      repeat_timer = 0;
-      repeat_code = 0;
+    } else {
+      if (model.swipe_keys) {
+        down_mask &= ~zone_bit(code);
+        if (!down_mask) swipe_active = false;
+      }
+      if (repeat_code == code) {
+        if (repeat_timer) loop.cancel_timer(repeat_timer);
+        repeat_timer = 0;
+        repeat_code = 0;
+      }
     }
   }
 
@@ -364,5 +479,6 @@ bool Input::open() {
 bool Input::hw_muted() const { return impl_->muted; }
 void Input::on_button(ButtonCb cb) { impl_->button_cb = std::move(cb); }
 void Input::on_mute(MuteCb cb) { impl_->mute_cb = std::move(cb); }
+void Input::on_swipe_hint(SwipeHintCb cb) { impl_->swipe_hint_cb = std::move(cb); }
 
 }  // namespace cs

@@ -22,6 +22,18 @@ constexpr const char *kCommandModel = "/system/vendor/quasar/spotter_models/comm
 // After the wake word a stock command ("Алиса, громче") is handled locally if it is heard
 // within this window; the HA pipeline is then cancelled.
 constexpr int64_t kCommandAfterWakeMs = 2500;
+// After playback stops the command spotter would otherwise go off at once (a paused Sendspin group
+// reports STOPPED, the local player is PAUSED). "Продолжи"/"играй" must still be heard then, so the
+// spotter stays armed for this long after the music went quiet.
+constexpr int64_t kCommandResumeWindowMs = 60'000;
+// A volume key may be the first zone of a swipe (Input's kSwipeWindowMs). When several volume
+// presses arrive in one burst, the level to restore after a swipe is the one before the first.
+constexpr int64_t kVolumeSequenceMs = 700;
+// The volume arc is Leds' 1.5 s indicator. On a swipe-capable strip the first key of a burst
+// waits before showing it (a swipe may be starting), and Input's swipe hint postpones it to the
+// end of the sequence window where needed.
+constexpr int64_t kVolumeFeedbackDelayMs = 200;
+constexpr int64_t kVolumeFeedbackHoldMs = 1500;
 constexpr const char *kSounds = "/system/vendor/quasar/sounds/";
 constexpr float kDuckGain = 0.15f;
 constexpr int64_t kTimerRingMaxMs = 15 * 60 * 1000;
@@ -232,10 +244,50 @@ bool Controller::start() {
       update_detection();
       update_ui();
     });
+    // A volume key then the action zone: possibly a swipe in progress, so the volume arc waits
+    // until the sequence window closes (a real swipe cancels it and shows the track change).
+    input_.on_swipe_hint([this] {
+      if (!volume_feedback_timer_) return;
+      loop_.cancel_timer(volume_feedback_timer_);
+      const int64_t now = Loop::now_ms();
+      volume_feedback_timer_ = loop_.add_timer(
+          std::max<int64_t>(0, last_volume_key_ms_ + kVolumeSequenceMs - now), [this] { show_volume_feedback(); });
+    });
     input_.on_button([this](Button b, Press p) {
+      if (b == Button::SWIPE_NEXT || b == Button::SWIPE_PREV) {
+        // The first zone of a swipe already stepped the volume (Input knows the gesture only at
+        // the third zone): put the level back. Its arc is dropped if it was shown at all, and
+        // the ring shows the track change instead.
+        if (volume_feedback_timer_) {
+          loop_.cancel_timer(volume_feedback_timer_);
+          volume_feedback_timer_ = 0;
+        }
+        set_volume(sequence_volume_, false);
+        const bool next = b == Button::SWIPE_NEXT;
+        leds_.show_swipe(next);
+        LOGI("swipe: %s", next ? "next track" : "previous track");
+        if (!sendspin_ || !sendspin_->transport(next ? SendspinService::Transport::NEXT
+                                                      : SendspinService::Transport::PREVIOUS))
+          LOGI("'%s' ignored: no Sendspin queue to skip in", next ? "next track" : "previous track");
+        return;
+      }
       if (b == Button::ACTION) {
-        api_->fire_event(EventId::BUTTON, p == Press::LONG ? "action_long" : "action");
-        if (p == Press::LONG) return;  // exposed to HA automations only
+        if (p == Press::LONG) {
+          // Hold = play/pause for the music. No button event is sent: the gesture is not meant to
+          // be duplicated into HA, the media player entity already follows the state.
+          if (sendspin_pairing_prompt_ && sendspin_) return sendspin_->confirm_pairing_window();
+          const bool playing = player_.state(Channel::MUSIC) == PlayState::PLAYING ||
+                               player_.state(Channel::MUSIC) == PlayState::LOADING ||
+                               (sendspin_ && sendspin_->streaming());
+          if (playing)
+            music_pause();
+          else
+            music_resume();
+          leds_.show_hold();
+          update_commands();
+          return;
+        }
+        api_->fire_event(EventId::BUTTON, "action");
         if (sendspin_pairing_prompt_ && sendspin_) return sendspin_->confirm_pairing_window();
         if (timer_ringing_) return stop_timer_ring();
         if (phase_ == Phase::LISTENING || phase_ == Phase::PROCESSING) {
@@ -250,7 +302,26 @@ bool Controller::start() {
         start_pipeline("", true);
       } else {
         api_->fire_event(EventId::BUTTON, b == Button::VOLUME_UP ? "volume_up" : "volume_down");
-        set_volume(st_.volume + (b == Button::VOLUME_UP ? 0.05f : -0.05f), true);
+        const int64_t now = Loop::now_ms();
+        if (!last_volume_key_ms_ || now - last_volume_key_ms_ > kVolumeSequenceMs)
+          sequence_volume_ = st_.volume;
+        last_volume_key_ms_ = now;
+        const float v = st_.volume + (b == Button::VOLUME_UP ? 0.05f : -0.05f);
+        if (!model_.swipe_keys) {
+          set_volume(v, true);
+        } else {
+          // The press may be the first zone of a swipe: change the level now but hold its arc
+          // back briefly (the hint from Input postpones it further, SWIPE_* drops it).
+          if (st_.muted) set_muted(false);
+          set_volume(v, false);
+          if (volume_feedback_timer_) {
+            // Already scheduled and will show the level current at that time.
+          } else if (now - volume_feedback_ms_ <= kVolumeFeedbackHoldMs) {
+            show_volume_feedback();  // the arc of this burst is on screen: update it at once
+          } else {
+            volume_feedback_timer_ = loop_.add_timer(kVolumeFeedbackDelayMs, [this] { show_volume_feedback(); });
+          }
+        }
       }
     });
   } else {
@@ -885,6 +956,13 @@ void Controller::set_volume(float v, bool feedback) {
   persist();
 }
 
+void Controller::show_volume_feedback() {
+  volume_feedback_timer_ = 0;
+  volume_feedback_ms_ = Loop::now_ms();
+  leds_.show_volume(st_.volume);
+  clock_.flash_number(int(st_.volume * 100 + 0.5f));
+}
+
 void Controller::publish_media() {
   update_commands();  // command spotter follows playback state
   MediaState s = MediaState::IDLE;
@@ -1202,11 +1280,36 @@ void Controller::on_active_wake_words(const std::vector<std::string> &ids) {
 // Stock command spotter ("стоп", "хватит", "пауза", "продолжи", "громче", "тише", "дальше", "назад"):
 // active without the wake word while something plays, and right after the wake word.
 void Controller::update_commands() {
-  bool playing = player_.state(Channel::MUSIC) == PlayState::PLAYING || (sendspin_ && sendspin_->streaming()) ||
-                 announcing_ || timer_ringing_ || phase_ == Phase::SPEAKING;
+  const int64_t now = Loop::now_ms();
+  const bool music = player_.state(Channel::MUSIC) == PlayState::PLAYING || (sendspin_ && sendspin_->streaming());
+  // Arm the window while music plays and on the event that stops it (music_was_on_ still set), so
+  // "продолжи" pauses can be undone by voice. Announcements and answers do not arm it.
+  if (music || music_was_on_) commands_until_ms_ = now + kCommandResumeWindowMs;
+  music_was_on_ = music;
+  const bool recently_played = now < commands_until_ms_;
+  const bool busy = announcing_ || timer_ringing_ || phase_ == Phase::SPEAKING;
   bool after_wake =
-      (phase_ == Phase::LISTENING && Loop::now_ms() - listen_started_ms_ < kCommandAfterWakeMs) || arbitrating_;
-  mic_.set_commands(!st_.mic_muted && !hw_mic_muted_ && (playing || after_wake));
+      (phase_ == Phase::LISTENING && now - listen_started_ms_ < kCommandAfterWakeMs) || arbitrating_;
+  const bool keep = music || busy || after_wake;
+  mic_.set_commands(!st_.mic_muted && !hw_mic_muted_ && (keep || recently_played));
+  // The resume window is a deadline, but this runs on state changes only: an idle station would
+  // otherwise keep the spotter armed forever. Schedule the update that closes it.
+  if (!keep && recently_played) {
+    if (commands_off_timer_ && commands_off_at_ms_ != commands_until_ms_) {
+      loop_.cancel_timer(commands_off_timer_);
+      commands_off_timer_ = 0;
+    }
+    if (!commands_off_timer_) {
+      commands_off_at_ms_ = commands_until_ms_;
+      commands_off_timer_ = loop_.add_timer(commands_until_ms_ - now, [this] {
+        commands_off_timer_ = 0;
+        update_commands();
+      });
+    }
+  } else if (commands_off_timer_) {
+    loop_.cancel_timer(commands_off_timer_);
+    commands_off_timer_ = 0;
+  }
 }
 
 void Controller::music_pause() {

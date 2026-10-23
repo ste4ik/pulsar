@@ -109,6 +109,7 @@ Model mini2() {
   m.clock_aux = {"DEGREE", "MINUS"};
   m.clock_chip_current = false;
   m.keys_input = "sar0_pad0";
+  m.swipe_keys = true;
   m.mute_gpio = 414;  // GPIOZ_3: pull-up, 0 = muted (latched by the mic circuit), edge "falling"
   m.error_sound = "ru-RU/playback_error.opus";
   m.wake_sound = "common/spotter_start.opus";

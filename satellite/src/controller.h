@@ -108,6 +108,7 @@ class Controller : public ApiHooks {
   void update_duck();
   void apply_gains();
   void set_volume(float v, bool feedback);
+  void show_volume_feedback();
   void set_muted(bool m);
   void start_sendspin(const DeviceIdentity &id);
   void start_zigbee(const DeviceIdentity &id);
@@ -136,8 +137,20 @@ class Controller : public ApiHooks {
 
   Phase phase_ = Phase::IDLE;
   int64_t listen_started_ms_ = 0;  // start of the current LISTENING phase (commands window)
+  // Command spotter stays armed for a while after the music stops, so "продолжи" is heard.
+  int64_t commands_until_ms_ = 0;
+  bool music_was_on_ = false;
+  uint64_t commands_off_timer_ = 0;  // closes the window on an otherwise idle station
+  int64_t commands_off_at_ms_ = 0;
   bool hw_mic_muted_ = false;
   bool error_shown_ = false;
+  // A swipe starts on a volume zone, which steps the volume before Input can know the gesture;
+  // this is the level from before the first volume key of the burst, restored on SWIPE_*.
+  float sequence_volume_ = 0;
+  int64_t last_volume_key_ms_ = 0;
+  // Volume arc held back while the press may still be the first zone of a swipe.
+  uint64_t volume_feedback_timer_ = 0;
+  int64_t volume_feedback_ms_ = 0;  // when the arc was last (re)shown for the current burst
   // Wake arbitration: the window between our claim and the decision. Microphone audio and a
   // command word heard in it are held until the decision.
   bool arbiter_ok_ = false;

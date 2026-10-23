@@ -47,6 +47,11 @@ struct Model {
   std::string playback_pcm = "speakers";
 
   std::string keys_input, mute_input;  // evdev device names
+  // The touch zones form one strip and a finger drawn across it should switch tracks (Mini 2).
+  // The firmware reports no coordinates, only the three key codes in the order they were touched,
+  // so Input turns the sequence volume down -> action -> volume up (and the reverse) into
+  // SWIPE_NEXT / SWIPE_PREV, as maind's SwipeManager does.
+  bool swipe_keys = false;
   // Mic mute on a plain GPIO instead of an evdev switch (Mini 2): global GPIO number, 0 = none.
   // The button is momentary, but the mic circuit latches the mute and holds the line grounded, so
   // value 0 = muted. Polled from sysfs, as maind does (its MuteButtonsImpl).
