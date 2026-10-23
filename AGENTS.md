@@ -63,7 +63,9 @@ one deployed) and `pulsar.debug` (unstripped, line tables) for `addr2line -f -e`
 crash report `main.cpp` writes to the log (non-PIE: addresses are absolute; armhf reports pc/lr only:
 glibc's `backtrace()` there runs libgcc_s's unwinder into the binary's static zig personality
 routine and segfaults). The version is
-`git describe --tags --always --dirty` (`--version`, HA DeviceInfo and the "Version" entity). Host-side
+`git describe --tags --always --dirty` (`--version`, HA DeviceInfo and the "Version" entity).
+`UPDATE_REPO=user/repo` (default `Morvex885/pulsar`) sets the GitHub repository the HA update
+entity checks; a fork's released builds pass themselves. Host-side
 tests exist only for the installer (`go -C installer test ./...`); the daemon is verified on the
 device.
 

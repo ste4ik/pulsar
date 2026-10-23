@@ -47,9 +47,14 @@ constexpr uint16_t kSendspinPort = 8928;
 // deCONZ-protocol Zigbee coordinator (ZHA socket:// / Zigbee2MQTT tcp://); 6638 is the port
 // network Zigbee coordinators conventionally use.
 constexpr uint16_t kZigbeePort = 6638;
-// Updates: releases of this repository on GitHub. The first check waits for the network after
-// boot; an automatic install waits until the speaker is idle (it restarts the daemon).
-constexpr const char *kUpdateRepo = "Morvex885/pulsar";
+// Updates: releases of this repository on GitHub. The source default is upstream; a fork's
+// released builds override it at compile time (satellite/Makefile UPDATE_REPO). The first check
+// waits for the network after boot; an automatic install waits until the speaker is idle (it
+// restarts the daemon).
+#ifndef PULSAR_UPDATE_REPO
+#define PULSAR_UPDATE_REPO "Morvex885/pulsar"
+#endif
+constexpr const char *kUpdateRepo = PULSAR_UPDATE_REPO;
 constexpr int64_t kUpdateFirstCheckMs = 60'000;
 constexpr int64_t kUpdateCheckPeriodMs = 6 * 3600'000LL;
 constexpr int64_t kUpdateIdleRetryMs = 10 * 60'000;

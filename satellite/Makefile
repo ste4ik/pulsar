@@ -84,6 +84,11 @@ DEPS := $(OBJS:.o=.d)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
 VERSION_STAMP := $(BUILD)/version.stamp
 $(BUILD)/main.o $(BUILD)/controller.o: CXXFLAGS += -DPULSAR_VERSION='"$(VERSION)"'
+
+# GitHub repository whose releases the update entity checks. The source default is upstream;
+# a fork that publishes its own builds passes itself, e.g. `make UPDATE_REPO=user/pulsar`.
+UPDATE_REPO ?= Morvex885/pulsar
+$(BUILD)/controller.o: CXXFLAGS += -DPULSAR_UPDATE_REPO='"$(UPDATE_REPO)"'
 $(BUILD)/main.o $(BUILD)/controller.o: $(VERSION_STAMP)
 
 $(VERSION_STAMP): FORCE
