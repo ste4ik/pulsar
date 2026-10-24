@@ -37,6 +37,7 @@ constexpr float kMaxScale = 0.8f;     // global cap: never drive LEDs above 80 %
 constexpr int64_t kVolumeShowMs = 1500;
 constexpr int64_t kSwipeShowMs = 700;  // one comet lap for a track change
 constexpr int64_t kHoldShowMs = 900;   // action-button hold: one smooth fade-in/fade-out
+constexpr int64_t kCommandShowMs = 500;  // voice command: one short full-ring flash
 constexpr int64_t kThinkWaveMs = 1400;  // assistant "thinking" ripple period
 constexpr int64_t kSpeakWaveMs = 900;   // assistant answer ripple period
 constexpr int64_t kWarnEveryMs = 10000;  // rate limit for repeated per-frame write warnings
@@ -115,6 +116,7 @@ struct Leds::Impl {
   int64_t swipe_t0 = 0, swipe_until = 0;
   int swipe_dir = 0;  // +1 next, -1 previous
   int64_t hold_t0 = 0, hold_until = 0;
+  int64_t command_t0 = 0, command_until = 0;
   uint64_t timer = 0;
   AmbientDimmer dimmer;
   int64_t warn_t[2] = {0, 0};  // last fb0/fb1 write warning
@@ -343,6 +345,16 @@ struct Leds::Impl {
       for (int i = 0; i < n; i++) ring[i] = kCyan * (0.85f * k);
       animated = true;  // need a frame when the pulse expires
     }
+    if (command_until && now < command_until) {
+      // Voice command accepted: the whole ring lights up once and goes out. The command spotter
+      // can fire without the wake word ("стоп", "пауза" over the music), so this is the only
+      // visible sign that the station heard and acted on the word. Drawn last: it must read on
+      // top of whatever the ring currently shows.
+      const float p = float(now - command_t0) / float(command_until - command_t0);
+      const float k = std::sin(3.14159265f * p);
+      for (int i = 0; i < n; i++) ring[i] = kWake * (0.95f * k);
+      animated = true;  // need a frame when the pulse expires
+    }
     return animated;
   }
 
@@ -445,6 +457,13 @@ void Leds::show_hold() {
   d.volume_until = 0;  // the gesture is the action button: no volume bar of its own
   d.hold_t0 = Loop::now_ms();
   d.hold_until = d.hold_t0 + kHoldShowMs;
+  d.frame();
+}
+
+void Leds::show_command() {
+  auto &d = *impl_;
+  d.command_t0 = Loop::now_ms();
+  d.command_until = d.command_t0 + kCommandShowMs;
   d.frame();
 }
 

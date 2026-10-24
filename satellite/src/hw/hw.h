@@ -45,6 +45,9 @@ class Leds {
   void show_swipe(bool next);
   // Transient action-button hold feedback (play/pause): the whole ring fades in and out once.
   void show_hold();
+  // Transient voice-command feedback: the whole ring flashes once. Commands the station acts on
+  // locally ("стоп", "пауза", ...) otherwise leave no visible trace.
+  void show_command();
   // Ambient light: dims the ring and logo (smoothed, with hysteresis; floor keeps them visible).
   void set_ambient_lux(float lux);
 

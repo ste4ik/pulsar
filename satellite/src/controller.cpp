@@ -1389,6 +1389,12 @@ void Controller::on_command(const std::string &word) {
     case NONE:
       break;
   }
+  // Visual acknowledgement of the word: a track skip gets the same comet as the touch swipe,
+  // everything else ("стоп", "пауза", ...) a short flash. Volume commands already light the ring
+  // with their arc.
+  if (c == NEXT) leds_.show_swipe(true);
+  else if (c == PREV) leds_.show_swipe(false);
+  else if (c != LOUDER && c != QUIETER) leds_.show_command();
   update_commands();
 }
 
