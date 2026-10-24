@@ -168,6 +168,9 @@ struct ApiConfig {
   // The model has a clock panel (Clock::open() succeeded). False: no clock switch/number/text/
   // select entities and no clock_show_* actions are sent (they would be permanently dead in HA).
   bool has_clock = true;
+  // The model has a light sensor (Model::has_lux). False: no illuminance entity and no lux states
+  // are sent (the Mini 2 has no sensor, so HA showed a permanently unknown value).
+  bool has_lux = true;
   // Select «Zigbee role» options; empty: no Zigbee entities (no radio).
   std::vector<std::string> zigbee_modes;
   // File holding the Noise encryption key (base64 of 32 bytes, as in ESPHome's api: encryption:

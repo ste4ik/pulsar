@@ -1349,7 +1349,7 @@ struct ApiServer::Impl {
       w.u32(9, ENTITY_CATEGORY_DIAGNOSTIC);
       send_msg(c, LIST_BINARY_SENSOR, w);
     }
-    {
+    if (cfg.has_lux) {
       pb::Writer w;
       entity_head(w, "illuminance", K_SENSOR_LUX, "Illuminance");
       w.str(6, "lx");
@@ -1550,7 +1550,7 @@ struct ApiServer::Impl {
     send_switch(K_SW_NEAREST_ANSWERS, sw_nearest_answers, c);
     send_update(c);
     send_binary(K_BS_HW_MIC_MUTE, bs_hw_mute, c);
-    send_float(SENSOR_STATE, K_SENSOR_LUX, lux, c);
+    if (cfg.has_lux) send_float(SENSOR_STATE, K_SENSOR_LUX, lux, c);
     if (cfg.has_clock) send_float(NUMBER_STATE, K_NUMBER_CLOCK_BRI, clock_bri, c);
     send_light(c);
     refresh_diagnostics(false);
@@ -1910,6 +1910,7 @@ void ApiServer::publish_binary_sensor(BinarySensorId, bool state) {
 }
 
 void ApiServer::publish_sensor(SensorId, float value) {
+  if (!impl_->cfg.has_lux) return;
   impl_->lux.has = true;
   impl_->lux.v = value;
   if (impl_->states_on()) impl_->send_float(SENSOR_STATE, K_SENSOR_LUX, impl_->lux);

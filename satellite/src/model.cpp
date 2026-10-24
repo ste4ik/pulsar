@@ -118,6 +118,10 @@ Model mini2() {
   // set_volume.sh is "amixer set 'Master' <percent>%": the platform level steps by 5 %, so the
   // softvol raw value (0..255) is the percentage, i.e. 12.75 per level with no offset.
   m.volume_map = {{0, 0}, {20, 255}};
+  // The second IS31FL3236 (i2c 0-003f) behind the clock does not probe on this firmware, and the
+  // board has no light sensor: no dead clock or illuminance entities in Home Assistant.
+  m.has_clock = false;
+  m.has_lux = false;
   return m;
 }
 

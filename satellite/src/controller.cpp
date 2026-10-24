@@ -191,7 +191,8 @@ bool Controller::start() {
   cfg.clock_faces.insert(cfg.clock_faces.end(), Clock::face_names().begin(), Clock::face_names().end());
   const auto slash = state_path_.rfind('/');
   cfg.key_path = (slash == std::string::npos ? std::string(".") : state_path_.substr(0, slash)) + "/api_key";
-  cfg.has_clock = clock_ok;
+  cfg.has_clock = model_.has_clock || clock_ok;
+  cfg.has_lux = model_.has_lux;
   if (!model_.zigbee_tty.empty())
     for (const auto &r : ZigbeeService::kRoles) cfg.zigbee_modes.push_back(r.label);
   api_ = std::make_unique<ApiServer>(loop_, id, cfg, *this);
